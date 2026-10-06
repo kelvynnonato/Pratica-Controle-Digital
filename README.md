@@ -1,2 +1,2 @@
-# Pratica-Eletronica-Digital
-Repositório dedicado as atividades práticas de eletrônica digital
+# Práticas de Eletronica Digital
+Repositório dedicado as atividades práticas de Eletrônica Digital
