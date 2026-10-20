@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +31,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define PWM_STEPS    4500u        /* ARR + 1 */
+#define SINE_LEN     1024u
+#define F_PWM        20000.0f
+#define F_SIGNAL     60.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +48,13 @@ ADC_HandleTypeDef hadc1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
+typedef enum { WAVE_SINE, WAVE_TRAP, WAVE_TRIA } wave_t;
+volatile wave_t wave = WAVE_SINE;
 
+static uint16_t sine_tab[SINE_LEN];
+static uint32_t phase = 0;
+static uint32_t phase_step;
+static uint32_t sd_acc = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -60,11 +69,6 @@ static void MX_TIM2_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-#define PWM_STEPS  4500u   /* ARR + 1 */
-
-volatile uint16_t adc_value = 0;
-static uint32_t sd_acc = 0;   /* resto fracionário, 0..65535 */
-
 static inline void pwm_set_duty16(uint16_t duty16)
 {
     sd_acc += (uint32_t)duty16 * PWM_STEPS;
@@ -73,6 +77,21 @@ static inline void pwm_set_duty16(uint16_t duty16)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, ccr);
 }
 
+static uint16_t trapezoid16(uint16_t p)        /* p: fase 0..65535 */
+{
+    if (p < 16384)  return (uint16_t)(p * 4u);               /* sobe   */
+    if (p < 32768)  return 65535;                            /* alto   */
+    if (p < 49152)  return (uint16_t)((49152u - p) * 4u);    /* desce  */
+    return 0;                                                /* baixo  */
+}
+
+static uint16_t triangle16(uint16_t p)        /* p: fase 0..65535 */
+{
+    if (p < 32768)
+        return (uint16_t)(p * 2u);            /* sobe: 0 -> 65534 */
+    else
+        return (uint16_t)((65535u - p) * 2u); /* desce: 65534 -> 0 */
+}
 /* USER CODE END 0 */
 
 /**
@@ -108,9 +127,15 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_ADC_Start_IT(&hadc1);
-  HAL_TIM_Base_Start(&htim2);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  for (uint32_t i = 0; i < SINE_LEN; i++)
+  {
+      float s = sinf(2.0f * 3.14159265f * i / SINE_LEN);   /* -1..+1 */
+      sine_tab[i] = (uint16_t)(32767.5f + 32767.0f * s);   /* 0..65535 */
+  }
+  phase_step = (uint32_t)(F_SIGNAL * 4294967296.0f / F_PWM);
+
+  HAL_TIM_Base_Start_IT(&htim2);                 /* interrupção de update, 20 kHz */
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);      /* saída PWM em PA0 */
 
   /* USER CODE END 2 */
 
@@ -311,12 +336,21 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    if (hadc->Instance == ADC1)
+    if (htim->Instance == TIM2)
     {
-        adc_value = HAL_ADC_GetValue(hadc);
-        uint16_t duty16 = (uint16_t)((adc_value << 4) | (adc_value >> 8));
+        phase += phase_step;
+        uint16_t duty16;
+
+        switch (wave)
+        {
+            case WAVE_SINE: duty16 = sine_tab[phase >> 22];    break;
+            case WAVE_TRAP: duty16 = trapezoid16(phase >> 16); break;
+            case WAVE_TRIA:  duty16 = triangle16(phase >> 16); break;
+            default:        duty16 = 0;                        break;
+        }
+
         pwm_set_duty16(duty16);
     }
 }
